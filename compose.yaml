@@ -1,0 +1,72 @@
+# Home media stack — Raspberry Pi (native Linux Docker)
+# Services:
+#   jellyfin  - serves the processed library
+#   unmanic   - pre-processes new files to a low-transcode-probability format
+#   tailscale - remote access through CGNAT (HTTPS on your tailnet, no ports opened)
+#
+# Run from this folder on the Pi:  docker compose up -d
+# Secrets: copy .env.example -> .env and fill in TS_AUTHKEY
+#
+# Flow: drop raw files into ./staging/<Movies|TVShows|...>. Unmanic re-encodes
+# them to H.264 / AAC-stereo / MP4, then MOVES the result into the matching
+# ./media/<...> folder. Jellyfin only ever sees the finished ./media library.
+
+services:
+  jellyfin:
+    image: jellyfin/jellyfin
+    container_name: jellyfin
+    restart: unless-stopped
+    ports:
+      - 8096:8096/tcp
+      - 7359:7359/udp   # DLNA/client auto-discovery on the LAN
+    volumes:
+      - ./appdata/jellyfin/config:/config
+      - ./appdata/jellyfin/cache:/cache
+      - ./media:/media:ro          # read-only: Jellyfin never writes the library
+    environment:
+      # Set this to your tailnet name once known (docker compose exec tailscale tailscale status)
+      - JELLYFIN_PublishedServerUrl=https://aurora-jellyfin.tail872d42.ts.net
+    # Optional Pi hardware decode/encode (rarely needed once the library is
+    # standardised). Uncomment to pass the Pi's video engine through:
+    # devices:
+    #   - /dev/dri:/dev/dri
+    networks:
+      - media
+
+  unmanic:
+    image: josh5/unmanic:latest
+    container_name: unmanic
+    restart: unless-stopped
+    ports:
+      - 8888:8888                  # web UI -> http://<pi-ip>:8888
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/London
+    volumes:
+      - ./appdata/unmanic/config:/config
+      - ./cache/unmanic:/tmp/unmanic   # transcode scratch (real disk, NOT tmpfs)
+      - ./staging:/staging             # raw drop zone Unmanic watches + processes
+      - ./media:/media                 # finished library (rw: Unmanic MOVES files here)
+    networks:
+      - media
+
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: aurora-jellyfin        # -> machine + MagicDNS name on your tailnet
+    restart: unless-stopped
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=true            # reliable, no /dev/net/tun needed
+      - TS_SERVE_CONFIG=/config/serve.json
+    volumes:
+      - ./appdata/tailscale:/var/lib/tailscale
+      - ./Tailscale/serve.json:/config/serve.json:ro
+    networks:
+      - media
+
+networks:
+  media:
+    driver: bridge
