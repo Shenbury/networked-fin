@@ -7,7 +7,7 @@
 # Run from this folder on the Pi:  docker compose up -d
 # Secrets: copy .env.example -> .env and fill in TS_AUTHKEY
 #
-# Flow: drop raw files into ./staging/<Movies|TVShows|...>. Unmanic re-encodes
+# Flow: drop raw files into /mnt/storage/staging/<Movies|TVShows|...>. Unmanic re-encodes
 # them to H.264 / AAC-stereo / MP4, then MOVES the result into the matching
 # ./media/<...> folder. Jellyfin only ever sees the finished ./media library.
 
@@ -43,7 +43,7 @@ services:
     volumes:
       - ./appdata/unmanic/config:/config
       - ./cache/unmanic:/tmp/unmanic   # transcode scratch (real disk, NOT tmpfs)
-      - ./staging:/staging             # raw drop zone Unmanic watches + processes
+      - /mnt/storage/staging:/staging  # raw drop zone Unmanic watches + processes
       - ./media:/media                 # finished library (rw: Unmanic MOVES files here)
     networks:
       - media
