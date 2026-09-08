@@ -16,9 +16,9 @@ services:
     image: jellyfin/jellyfin
     container_name: jellyfin
     restart: unless-stopped
-    ports:
-      - 8096:8096/tcp
-      - 7359:7359/udp   # DLNA/client auto-discovery on the LAN
+    depends_on:
+      - tailscale
+    network_mode: service:tailscale
     volumes:
       - ./appdata/jellyfin/config:/config
       - ./appdata/jellyfin/cache:/cache
@@ -30,9 +30,6 @@ services:
     # standardised). Uncomment to pass the Pi's video engine through:
     # devices:
     #   - /dev/dri:/dev/dri
-    networks:
-      - media
-
   unmanic:
     image: josh5/unmanic:latest
     container_name: unmanic
@@ -56,14 +53,15 @@ services:
     container_name: tailscale
     hostname: aurora-jellyfin        # -> machine + MagicDNS name on your tailnet
     restart: unless-stopped
+    ports:
+      - 8096:8096/tcp
+      - 7359:7359/udp   # DLNA/client auto-discovery on the LAN
     environment:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_USERSPACE=true            # reliable, no /dev/net/tun needed
-      - TS_SERVE_CONFIG=/config/serve.json
     volumes:
       - ./appdata/tailscale:/var/lib/tailscale
-      - ./Tailscale/serve.json:/config/serve.json:ro
     networks:
       - media
 

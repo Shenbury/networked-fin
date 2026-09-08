@@ -6,7 +6,7 @@
   "Web": {
     "${TS_CERT_DOMAIN}:443": {
       "Handlers": {
-        "/": { "Proxy": "http://jellyfin:8096" }
+        "/": { "Proxy": "http://127.0.0.1:8096" }
       }
     },
     "${TS_CERT_DOMAIN}:8443": {
