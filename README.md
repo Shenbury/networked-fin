@@ -9,7 +9,7 @@ Jellyfin + Unmanic + Tailscale, designed so the Pi **almost never has to transco
   tailnet, no port forwarding, no public IP needed)
 
 ```
- drop raw file ->  ./staging/Movies/foo.mkv
+ drop raw file ->  /mnt/storage/staging/Movies/foo.mkv
                         |
                     Unmanic  (re-encode: H.264 / AAC 2.0 / MP4)
                         |
@@ -30,7 +30,7 @@ nginxmanager/
 ├─ .env                 # your Tailscale key (gitignored)
 ├─ .env.example
 ├─ Tailscale/serve.json # exposes Jellyfin (:443) + Unmanic UI (:8443) over the tailnet
-├─ staging/             # DROP raw files here (mirrors media subfolders)
+├─ /mnt/storage/staging/ # DROP raw files here (mirrors media subfolders)
 │  ├─ Movies/ TVShows/ Music/ Photos/ Holidays/ Memories/
 └─ media/               # FINISHED library Jellyfin serves — Unmanic writes here
    ├─ Movies/
@@ -41,13 +41,31 @@ nginxmanager/
    └─ Memories/
 ```
 
-You add files to `staging/<category>/`; Unmanic processes them and moves the
-result to the matching `media/<category>/`.
+You add files to `/mnt/storage/staging/<category>/`; Docker exposes that host
+directory to Unmanic as `/staging`. Unmanic processes the files and moves the
+result to the matching local `media/<category>/` directory, exposed to the
+container as `/media`.
 `appdata/` and `cache/` are created automatically on first run.
 
-> **Using an external drive?** Point the library at it by changing `./media`
-> in `compose.yaml` to an absolute path, e.g. `/mnt/usbdrive/media:/media:ro`
-> (Jellyfin) and `/mnt/usbdrive/media:/library` (Unmanic).
+The repository's local `staging/` directory is not used by this compose file.
+The input directory is the host path `/mnt/storage/staging` (or whatever host
+path is configured on the left side of the `/staging` volume mapping).
+
+Unmanic runs as UID/GID `1000:1000`. The output directory and its category
+directories must therefore be writable by GID `1000`; otherwise processing can
+complete but Mover v2 will fail with `Permission denied` and no file will reach
+`media/`. On the Pi, prepare the directories with:
+
+```bash
+sudo mkdir -p media/{Movies,TVShows,Music,Photos,Holidays,Memories}
+sudo chown -R root:1000 media
+sudo chmod -R g+rwX media
+```
+
+> **Using an external drive?** Change the host-side paths in `compose.yaml`.
+> For example, use `/mnt/usbdrive/staging:/staging` for the Unmanic input and
+> `/mnt/usbdrive/media:/media` for the finished library. Keep the Jellyfin
+> mount read-only: `/mnt/usbdrive/media:/media:ro`.
 
 ---
 
@@ -90,44 +108,64 @@ docker compose exec tailscale tailscale status
 Goal: every file ends up as **MP4 / H.264 8-bit / AAC 2.0**, which direct-plays
 on virtually every client (browsers, phones, TVs, Jellyfin apps).
 
-Open `http://<pi-ip>:8888`, then **Settings → Libraries** and set the library
-**Path = `/staging`**. Enable both the **file monitor** (process on new files)
-and a periodic **scanner**.
+Open Unmanic at `http://<pi-ip>:8888`, then **Settings → Libraries** and set the
+library **Path = `/staging`**. Enable the **file monitor** (process new files),
+the library scanner, and **Run a one off library scan on startup**. Set the
+scanner schedule to a short interval such as **5 minutes** rather than the
+default 1440 minutes (once per day).
+
+Use `http://localhost:8888` only when the browser is running on the Pi itself.
+From another computer on the LAN, use the Pi's address, for example
+`http://192.168.1.132:8888`. Over Tailscale, use the HTTPS URL documented below.
+
+To scan immediately, open the library's actions or three-dot menu and choose
+**Rescan library now**. The scan should place discovered files in the queue;
+watch **Dashboard** for scan progress and processing status.
+
+The extension filter must have **Add all matching files to pending tasks list**
+enabled. This is needed when the input is already H.264/AAC/MP4: otherwise
+Unmanic can correctly decide that the file needs no codec work and skip the
+task entirely, which also means Mover v2 never gets a chance to move it.
 
 ### Install these plugins (Plugins → Manage Plugins)
 
-Add them in this flow order. Exact names may vary slightly in the browser —
-match by function.
+Add them in this flow order. These are the plugin names used by the current
+Unmanic plugin catalog.
 
-**A. File-test (skip work that isn't needed)**
-- **"Ignore files already meeting target"** / *Ignore by codec* — skip files
-  that are already H.264 + AAC + MP4 so nothing is re-processed forever.
+**A. Library file test**
+- **Limit Library Search by File Extension** — include the media extensions
+  you use, such as `mp4`, `mkv`, `avi`, `mov`, and `webm`.
 
 **B. Worker — video**
-- **"Video Encoder H264 (libx264)"** — settings:
+- **Transcode Video Files** — settings:
   - Encoder: `libx264` (software — best quality/compatibility on a Pi)
-  - Constant quality (CRF): **`21`** (lower = better/bigger; 20–23 is the sweet spot)
-  - Preset: **`faster`** or `veryfast` (Pi 4) / `medium` (Pi 5) — trades speed for size
-  - Profile: **High**, Level **4.1**
-  - Pixel format: **`yuv420p`** (forces 8-bit — kills the 10-bit/HDR transcode trigger)
+  - Constant quality (CRF): **`22`** (20–23 is the practical compatibility range)
+  - Preset: **`Very fast`** — suitable for background processing on the Pi
+  - Profile: **Auto** — this is the only profile exposed by the installed plugin
+  - The installed plugin does not expose a pixel-format control; the sample
+    output is `yuv420p`, but verify 10-bit/HDR sources separately if needed.
 
 **C. Worker — audio**
-- **"Add extra audio stream"** (a.k.a. stereo clone) — add an **AAC stereo (2.0)**
-  track if one isn't present. This is the #1 sneaky transcode cause: surround-only
-  (DTS/TrueHD) files transcode even when the video is fine. Keep the original
-  surround track too if you like; just guarantee an AAC 2.0 exists.
+- **Add Extra Stereo Audio** (a.k.a. stereo clone) — configure the source
+  language as **English**, leave source channel count and codec blank, use the
+  native AAC encoder, keep the original multichannel stream, make the new
+  stereo stream the default, and move it to the first audio stream. This adds
+  an **AAC stereo (2.0)** track when a matching multichannel English track is
+  present. Files without an English language tag will not match this setting.
 
 **D. Worker — container**
-- **"Remux to MP4"** / *Force MP4 container*. MP4 is the safest streaming
+- **Remux Video Files** — set the container to `MP4`. MP4 is the safest streaming
   container. (Text subtitles become `mov_text`; image subs like PGS can't live
   in MP4 and will be dropped — extract them to external `.srt` first if you need them.)
 
 **E. Post-processor — MOVE to the media library (this is the staging step)**
-- Search the plugin browser for **"move"** and install a post-processor movement
-  plugin (e.g. *"Postprocessor - move file to a new location"*). Configure:
+- Install **Mover v2** and configure:
   - **Destination:** `/media`
-  - **Preserve source subdirectory structure:** ON — so `staging/Movies/foo`
+  - **Recreate directory structure:** ON — so `staging/Movies/foo`
     lands in `media/Movies/foo`, `staging/TVShows/...` in `media/TVShows/...`, etc.
+  - **Also include library path:** OFF — do not create a `/media/staging/...`
+    path.
+  - **Remove source files:** ON — this completes the move after a successful task.
 - This is what makes staging strict: the finished file is *moved out* of
   `/staging` into `/media`, so Jellyfin only ever sees completed files.
 
@@ -135,9 +173,12 @@ match by function.
 > in-place (Path = `/media`, drop files straight into `media/<category>`), losing
 > the strict staging separation but keeping the same transcode result.
 
-Save. Drop a non-compliant file into `staging/Movies/` and watch **Dashboard** —
-it should queue, encode, and move to `media/Movies/`. Play it in Jellyfin: the
-stream info should say **"Direct playing"**, and the Pi's CPU should stay near idle.
+Save. Drop a file into `/mnt/storage/staging/Movies/` and watch **Dashboard** —
+it should queue, process, and move to `media/Movies/`. Even a compliant MP4
+must be queued by the extension filter for Mover v2 to relocate it. Confirm
+that the source disappears only after the destination file exists. Play it in
+Jellyfin: the stream info should say **"Direct playing"**, and the Pi's CPU
+should stay near idle.
 
 ---
 
